@@ -154,7 +154,7 @@ int main(){
 
     while(running){
         log_debug("Bincount number is %d", bincount);
-        sleep(1);
+        sleep(5);
     }
 
     stop_sg_server();

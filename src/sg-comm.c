@@ -361,7 +361,7 @@ int start_sg_server(){
     task_queues->bin_clear_tasks = rb_create(128);
     task_queues->bin_ack_tasks = rb_create(128);
 
-    // if(task_queues->bin_query_tasks != NULL && task_queues->bin_clear_tasks != NULL && task_queues->bin_ack_tasks != NULL){
+    if(task_queues->bin_query_tasks != NULL && task_queues->bin_clear_tasks != NULL && task_queues->bin_ack_tasks != NULL){
         g_srv = SgTcpServer_new("0.0.0.0", SERVER_PORT, 128);
         SgTcpServer_set_on_message(g_srv, on_message, task_queues);
         SgTcpServer_start(g_srv);
@@ -378,16 +378,14 @@ int start_sg_server(){
             return EXIT_FAILURE;
         }
 
-        // if(!(ret1 /*|| ret2 || ret3 || ret4*/)){
-        //     log_info("Server and client request handlers started!");
-        //     return EXIT_SUCCESS;
-        // }
-    // }
+        if(!(ret1 || ret2 || ret3 || ret4)){
+            log_info("Server and client request handlers started!");
+            return EXIT_SUCCESS;
+        }
+    }
 
-    // log_error("Failed to start server or client handlers!");
-    // return EXIT_FAILURE;
-
-    return EXIT_SUCCESS;
+    log_error("Failed to start server or client handlers!");
+    return EXIT_FAILURE;
 }
 
 void stop_sg_server(){
