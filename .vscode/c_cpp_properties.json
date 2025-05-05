@@ -1,0 +1,18 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/home/ray/lmu5541_sdk/staging_dir/lmu5541_target-arm_cortex-a9+vfpv3_uClibc-0.9.33.2_eabi/usr/include",
+                "${workspaceFolder}/src/include"
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "clang-x64"
+        }
+    ],
+    "version": 4
+}
