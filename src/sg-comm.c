@@ -107,9 +107,26 @@ void add_pending(int fd, const char *str, unsigned int bincount){
     p->len       = strlen(str);
     p->msg       = strdup(str);
     p->last_sent = time(NULL);
+
     pthread_mutex_lock(&pending_mtx);
+
+    // 1) 在加入最新记录之前，先删除该 client 的所有旧 pending
+    PendingAck **pp = &pending_head;
+    while (*pp) {
+        if ((*pp)->client_fd == fd) {
+            PendingAck *old = *pp;
+            *pp = old->next;            // 从链表摘除
+            free(old->msg);
+            free(old);
+            continue;                   // 不推进 pp，继续检查新 *pp
+        }
+        pp = &(*pp)->next;
+    }
+
+    // 2) 将最新记录插入到链表头
     p->next = pending_head;
     pending_head = p;
+
     pthread_mutex_unlock(&pending_mtx);
 }
 

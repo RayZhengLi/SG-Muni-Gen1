@@ -18,7 +18,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=sg-muni
-PKG_VERSION:=0.1.0
+PKG_VERSION:=0.1.1
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
@@ -71,15 +71,13 @@ LOGGER="/usr/bin/logger -t sg-muni"
 
 start() {
 sleep 5
-`/bin/sg-muni` > /dev/null 2>&1 &
+/bin/sg-muni > /dev/null 2>&1 &
 echo "sg-muni state start"
-LOGGER "sg-muni state start"
 }
 
 stop() {
 killall sg-muni
 echo "sg-muni state stop"
-LOGGER "sg-muni state stop"
 }
 
 EOF
