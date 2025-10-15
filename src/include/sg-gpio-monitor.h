@@ -10,6 +10,7 @@
 typedef struct {
     bool changed;
     bool rising_edge;
+    unsigned int counter;
 } InputChange;
 
 typedef struct {

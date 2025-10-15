@@ -4,6 +4,9 @@
 #include "sg-ringbuffer.h"
 #include "sg-log.h"
 #include "sg-gpio-monitor.h"
+#include "sg-http-client.h"
+#include "sg-file-ringbuffer.h"
+#include "sg-gps.h"
 #include "main.h"
 #include <time.h>
 #include "cJSON.h"
@@ -15,6 +18,9 @@
 #include <uuid/uuid.h>
 #include <syslog.h>
 #include <ctype.h>
+
+#define WEB_REQUEST_MSG_TYPE 1
+
 static PendingAck      *pending_head  = NULL;
 static pthread_mutex_t  pending_mtx   = PTHREAD_MUTEX_INITIALIZER;
 static TaskQueueSet    *task_queues   = NULL;   // CAUTION: the tasks in this queue must be freed in [task threads] and should not be freed in [on_message] function
@@ -23,7 +29,12 @@ static pthread_t bin_query_thread;
 static pthread_t bin_clr_thread;
 static pthread_t bin_ack_thread;
 static pthread_t bin_resend_thread;
+static pthread_t web_client_thread;
 static int       thread_stop          = 1;
+
+static sg_http_client_t *web_cli = NULL;        // The HTTP(s) client for Asgard X
+
+static FileRingBuffer frb;
 
 static MsgType parse_client_request(ClientRequest *client_req, const char *msg);
 static void gpio_change_callback(const GPIOChangeInfo *info);
@@ -42,7 +53,9 @@ int create_task_pipeline(TaskQueueSet *pipeline){
     pipeline->bin_ack_tasks = rb_create(128);
     pipeline->bin_clear_tasks = rb_create(128);
     pipeline->bin_query_tasks = rb_create(128);
-    if(pipeline->bin_ack_tasks && pipeline->bin_clear_tasks && pipeline->bin_query_tasks){
+    pipeline->web_client_tasks = rb_create(128);
+
+    if(pipeline->bin_ack_tasks && pipeline->bin_clear_tasks && pipeline->bin_query_tasks && pipeline->gpio_web_task){
         return 1;
     }else{
         return 0;
@@ -279,6 +292,116 @@ void *bin_ack_handler(void *arg){
     return NULL;
 }
 
+void *web_client_handler(void *arg){
+    RingBuffer *queue = (RingBuffer *)arg;
+    log_debug("Web client handler task started");
+
+    // Init the web client here
+    sg_http_client_opts opts;
+    sg_http_client_opts_init(&opts);
+    opts.max_inflight = 16;
+    opts.retry_max_attempts = 5;
+    opts.conn_timeout_ms = 10000;
+    opts.tls_ca_path = "/etc/ssl/certs/ca-certificates.crt";
+
+    if (sg_http_client_start(&opts, &web_cli) != 0) {
+        log_error("Failed to start HTTP client");
+        return NULL;
+    }
+    log_info("HTTP client started");
+    while(!thread_stop){
+        WebRequest *task = NULL;
+        static int req_id = 1;
+        if(!rb_timed_pop(queue, (void**)&task, 500)){
+            // Check if there are failed requests in the local file ring buffer
+            log_info("No web client task in the queue, checking old failed requests in the file buffer");
+            uint8_t *buf = (uint8_t*)malloc(sizeof(WebRequest));
+            if (!buf) { log_error("malloc failed in file buffer read"); return NULL; }
+            uint16_t type = 0;
+            size_t need = sizeof(WebRequest);
+            int rc = file_ringbuffer_peek_bytes(&frb, buf, need, type);
+            switch(rc){
+                case 0:{
+                    if(type == WEB_REQUEST_MSG_TYPE && need == sizeof(WebRequest)){
+                        WebRequest *failed_req = (WebRequest*)buf;
+                        rb_timed_push(queue, failed_req, 100);
+                        log_info("A failed web request type %d has been read from the local file and pushed to the web client queue", type);
+                    }else{
+                        log_error("Invalid data in the local file, type %d, size %zu", type, need);
+                        free(buf);
+                    }
+                    break;
+                }
+                case -1:
+                    log_error("File buffer read error");
+                    free(buf);
+                    break;
+                case -5:
+                    log_info("File buffer too small, need %zu bytes", need);
+                    free(buf);
+                    break;
+                default:
+                    free(buf);
+                    break;
+            }
+            continue;
+        } 
+        log_debug("Handling web request task (%s) to URL (%s)", task->body, task->url);
+        if(web_cli){
+            sg_http_request req = {0};
+            if(req_id >= INT32_MAX){
+                req_id = 0;
+            }
+            req.id = req_id++;
+            switch (task->type){
+                case MSG_WEB_GPIO:
+                    req.method = SG_HTTP_POST;
+                    req.url    = task->url;
+                    req.body   = task->body;
+                    req.body_len = strlen(task->body);
+                    req.max_retries = 3;
+                    break;
+                case MSG_WEB_GPS:
+                    req.method = SG_HTTP_POST;
+                    req.url    = task->url;
+                    req.body   = task->body;
+                    req.body_len = strlen(task->body);
+                    req.max_retries = 3;
+                    break;
+            }
+            sg_http_response rsp = {0};
+            int ok = sg_http_client_send_and_wait(web_cli, &req, 1000, 5000, &rsp);
+            if(ok == 1){
+                char output[2048];
+                sprintf(output, "Received response\n"
+                                "---------------------------------------------\n"
+                                "> [WEB-CLIENT-RECV] id=%d ok=%d http=%d attempts=%d len=%zu <\n"
+                                "%s\n"
+                                "---------------------------------------------\n", rsp.id, rsp.ok, rsp.http_status, rsp.attempts, rsp.len, rsp.data);
+                log_info("%s", output);
+                sg_http_response_free(&rsp);
+                // If this is a retry message, delete it from the file buffer
+                if(task->retry_msg){
+                    file_ringbuffer_delete(&frb);
+                }
+            }else {
+                log_error("Failed to get response for request id=%d", req.id);
+                if(task->retry_msg){
+                    log_error("The retry message failed again, do not delete it");
+                }
+                // Stored the send failed request to local file ring buffer
+                task->retry_msg = true;
+                if(file_ringbuffer_write_bytes_timed(&frb, task, sizeof(WebRequest), WEB_REQUEST_MSG_TYPE, 100) != 0){
+                    log_error("Failed to store the failed web request to the local file");
+                }else{
+                    log_info("Failed web request type %d has been stored to the local file",task->type);
+                }
+            }
+            free(task);
+        }
+    }
+}
+
 /**
  * @brief   This is the GPIO handler callback. Send bin lift json and reverse messages when triggered
  * 
@@ -287,6 +410,9 @@ void *bin_ack_handler(void *arg){
  * @return  [NULL]
  */
 static void gpio_change_callback(const GPIOChangeInfo *info){
+    // Assemble the web client message
+    
+
     if((info->inputs[BINLIFT_PORT_NUM].changed == true) && (info->inputs[BINLIFT_PORT_NUM].rising_edge == gpio_bias[BINLIFT_PORT_NUM].enable)){
         char *bin_message = NULL;
         pthread_mutex_lock(&bincount_mutex);
@@ -316,6 +442,59 @@ static void gpio_change_callback(const GPIOChangeInfo *info){
 
         SgTcpServer_broadcast(g_srv, (uint8_t *)str, strlen(str));
     }
+}
+
+/**
+ * @brief   Assemble the gpio josn for web client
+ * 
+ * @param   [const GPIOChangeInfo *info]:  GPIO info struct
+ * 
+ * @return  [char *json_str] JSON string
+ */
+static char *assemble_web_gpio_message(const char *esn, const GPIOChangeInfo *info){
+    cJSON *root = cJSON_CreateObject();
+
+    char esn_str[48];
+    sprintf(esn_str, "sargas-%s", esn);
+    cJSON_AddStringToObject(root, "id", esn_str);
+
+    // Gnerate a UUID
+    char uuid_str[37];
+    uuid_t uuid;
+    uuid_generate(uuid);
+    uuid_unparse(uuid, uuid_str);
+    cJSON_AddStringToObject(root, "uuid", uuid_str);
+
+    // Get current time stamp
+    time_t now = time(NULL);
+    if(now == (time_t)-1){
+        log_error("Failed to get timestamp");
+        cJSON_AddNumberToObject(root, "timestamp", 0);
+    }
+    cJSON_AddNumberToObject(root, "timestamp", now);
+
+    cJSON_AddStringToObject(root, "event", "input");
+
+    cJSON *payload = cJSON_CreateObject();
+    for (int i = 0; i < MAX_INPUTS; ++i) {
+        if(info->inputs[i].changed){
+            cJSON *p_obj = cJSON_CreateObject();
+            if(info->inputs[i].rising_edge == gpio_bias[i].enable){
+                cJSON_AddNumberToObject(p_obj, "value",1);
+            }else{
+                cJSON_AddNumberToObject(p_obj, "value",0);
+            }
+            cJSON_AddNumberToObject(p_obj, "value", info->inputs[i].rising_edge ? 1 : 0);
+            cJSON_AddNumberToObject(p_obj, "count", info->inputs[i].counter);
+            char port_str[8];
+            sprintf(port_str, "port%d", i);
+            cJSON_AddItemToObject(payload, port_str, p_obj);
+        }
+    }
+    cJSON_AddItemToObject(root, "payload", payload);
+    cJSON *location = cJSON_CreateObject();
+    GPSData *gps = gps_get_data();
+    
 }
 
 /**
@@ -353,13 +532,21 @@ static void assemble_reverse_message(char *str, bool state){
 }
 
 int start_sg_server(){
+    // Initialise the file ring buffer
+    if (file_ringbuffer_init(&frb, 3, "buffer.dat") != 0) {
+        printf("Failed to initialize buffer.\n");
+        return -1;
+    } 
+    file_ringbuffer_enable_fsync(&frb, true);
+
     thread_stop = 0;
     pthread_mutex_init(&bincount_mutex, NULL);
 
     task_queues = calloc(1, sizeof(TaskQueueSet));
-    task_queues->bin_query_tasks = rb_create(128);
-    task_queues->bin_clear_tasks = rb_create(128);
-    task_queues->bin_ack_tasks = rb_create(128);
+    task_queues->bin_query_tasks  = rb_create(128);
+    task_queues->bin_clear_tasks  = rb_create(128);
+    task_queues->bin_ack_tasks    = rb_create(128);
+    task_queues->web_client_tasks = rb_create(128);
 
     if(task_queues->bin_query_tasks != NULL && task_queues->bin_clear_tasks != NULL && task_queues->bin_ack_tasks != NULL){
         g_srv = SgTcpServer_new("0.0.0.0", SERVER_PORT, 128);
@@ -370,6 +557,7 @@ int start_sg_server(){
         int ret2 = pthread_create(&bin_clr_thread, NULL, bin_clr_handler, task_queues->bin_clear_tasks);
         int ret3 = pthread_create(&bin_ack_thread, NULL, bin_ack_handler, task_queues->bin_ack_tasks);
         int ret4 = pthread_create(&bin_resend_thread, NULL, ack_manager, NULL);
+        int ret5 = pthread_create(&web_client_thread, NULL, web_client_handler, task_queues->web_client_tasks);
 
         set_gpio_change_callback(gpio_change_callback);
         if(!start_gpio_monitor()){

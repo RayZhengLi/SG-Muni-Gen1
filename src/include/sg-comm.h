@@ -20,6 +20,8 @@ typedef enum {
     MSG_BIN_QUERY,
     MSG_CLR_QUERY,
     MSG_BIN_ACK,
+    MSG_WEB_GPIO,
+    MSG_WEB_GPS,
 } MsgType;
 
 typedef struct{
@@ -29,9 +31,17 @@ typedef struct{
 }ClientRequest;
 
 typedef struct{
+    MsgType type;
+    bool retry_msg;  // If true, this is a re-sent message
+    char url[256];
+    char body[1024];
+}WebRequest;
+
+typedef struct{
     RingBuffer *bin_query_tasks;
     RingBuffer *bin_clear_tasks;
     RingBuffer *bin_ack_tasks;
+    RingBuffer *web_client_tasks;
 }TaskQueueSet;
 
 // 待确认消息链表

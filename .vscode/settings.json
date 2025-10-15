@@ -1,0 +1,12 @@
+{
+    "files.associations": {
+        "sg-tcp.h": "c",
+        "sg-ringbuffer.h": "c",
+        "sg-tcp-client.h": "c",
+        "netdb.h": "c",
+        "stdatomic.h": "c",
+        "stdio.h": "c",
+        "system_error": "c",
+        "functional": "c"
+    }
+}
