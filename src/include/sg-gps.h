@@ -16,6 +16,10 @@ typedef struct {
     unsigned int fixstatus;
 }GPSData;
 
+// Update the internal static GPS data and return a pointer to it
 GPSData *gps_get_data();
+
+// Get current location and update the provided structure
+bool gps_get_current_location(GPSData *location);
 
 #endif

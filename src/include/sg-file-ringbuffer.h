@@ -13,7 +13,7 @@
 #include <stdint.h>
 
 #ifndef RECORD_SIZE
-#define RECORD_SIZE     1024
+#define RECORD_SIZE     2048
 #endif
 #define MAGIC_NUMBER    "RBUF"
 #define VERSION         1

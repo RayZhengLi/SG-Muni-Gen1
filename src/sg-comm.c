@@ -20,6 +20,7 @@
 #include <ctype.h>
 
 #define WEB_REQUEST_MSG_TYPE 1
+#define WEB_SERVER_URL "https://httpbin.org/post"
 
 static PendingAck      *pending_head  = NULL;
 static pthread_mutex_t  pending_mtx   = PTHREAD_MUTEX_INITIALIZER;
@@ -30,6 +31,8 @@ static pthread_t bin_clr_thread;
 static pthread_t bin_ack_thread;
 static pthread_t bin_resend_thread;
 static pthread_t web_client_thread;
+static pthread_t gps_thread;
+
 static int       thread_stop          = 1;
 
 static sg_http_client_t *web_cli = NULL;        // The HTTP(s) client for Asgard X
@@ -55,7 +58,7 @@ int create_task_pipeline(TaskQueueSet *pipeline){
     pipeline->bin_query_tasks = rb_create(128);
     pipeline->web_client_tasks = rb_create(128);
 
-    if(pipeline->bin_ack_tasks && pipeline->bin_clear_tasks && pipeline->bin_query_tasks && pipeline->gpio_web_task){
+    if(pipeline->bin_ack_tasks && pipeline->bin_clear_tasks && pipeline->bin_query_tasks && pipeline->web_client_tasks){
         return 1;
     }else{
         return 0;
@@ -292,6 +295,31 @@ void *bin_ack_handler(void *arg){
     return NULL;
 }
 
+void gps_handler(void *arg){
+    RingBuffer *queue = (RingBuffer *)arg;
+    log_debug("GPS handler task started");
+    while(!thread_stop){
+        WebRequest *web_task = calloc(1, sizeof(WebRequest));
+        web_task->type = MSG_WEB_GPS;
+        strncpy(web_task->url, WEB_SERVER_URL, sizeof(web_task->url)-1);
+        GPSData loc;
+        memset(&loc, 0, sizeof(loc));
+        char *web_gpio_json = assemble_web_gps_message(esn_data);
+        if(web_gpio_json){
+            strncpy(web_task->body, web_gpio_json, strlen(web_gpio_json));
+            web_task->retry_msg = false;
+            if(!rb_timed_push(queue, web_task, 100)){
+                log_error("Failed to push web gps task to the queue, dropping");
+                free(web_task);
+            }else{
+                log_debug("Web gps task has been pushed to the queue");
+            }   
+            free(web_gpio_json);
+        }
+        sleep(1);
+    }
+}
+
 void *web_client_handler(void *arg){
     RingBuffer *queue = (RingBuffer *)arg;
     log_debug("Web client handler task started");
@@ -400,6 +428,8 @@ void *web_client_handler(void *arg){
             free(task);
         }
     }
+    sg_http_client_stop(web_cli);
+    return NULL;
 }
 
 /**
@@ -411,7 +441,21 @@ void *web_client_handler(void *arg){
  */
 static void gpio_change_callback(const GPIOChangeInfo *info){
     // Assemble the web client message
-    
+    char *web_gpio_json = assemble_web_gpio_message(esn_data, info);
+    if(web_gpio_json){
+        WebRequest *web_task = calloc(1, sizeof(WebRequest));
+        web_task->type = MSG_WEB_GPIO;
+        strncpy(web_task->url, WEB_SERVER_URL, sizeof(web_task->url)-1);
+        strncpy(web_task->body, web_gpio_json, strlen(web_gpio_json));
+        web_task->retry_msg = false;
+        if(!rb_timed_push(task_queues->web_client_tasks, web_task, 100)){
+            log_error("Failed to push web gpio task to the queue, dropping");
+            free(web_task);
+        }else{
+            log_debug("Web gpio task has been pushed to the queue");
+        }   
+        free(web_gpio_json);
+    }
 
     if((info->inputs[BINLIFT_PORT_NUM].changed == true) && (info->inputs[BINLIFT_PORT_NUM].rising_edge == gpio_bias[BINLIFT_PORT_NUM].enable)){
         char *bin_message = NULL;
@@ -447,9 +491,9 @@ static void gpio_change_callback(const GPIOChangeInfo *info){
 /**
  * @brief   Assemble the gpio josn for web client
  * 
- * @param   [const GPIOChangeInfo *info]:  GPIO info struct
- * 
- * @return  [char *json_str] JSON string
+ * @param   const [GPIOChangeInfo *info]:  GPIO info struct
+ * @param   const [char *]esn: The device esn number
+ * @return  [char *json_str]: JSON string
  */
 static char *assemble_web_gpio_message(const char *esn, const GPIOChangeInfo *info){
     cJSON *root = cJSON_CreateObject();
@@ -493,8 +537,72 @@ static char *assemble_web_gpio_message(const char *esn, const GPIOChangeInfo *in
     }
     cJSON_AddItemToObject(root, "payload", payload);
     cJSON *location = cJSON_CreateObject();
-    GPSData *gps = gps_get_data();
-    
+    GPSData loc;
+    memset(&loc, 0, sizeof(loc));
+    if(gps_get_current_location(&loc)){
+        cJSON_AddNumberToObject(location, "lat", loc.lat);
+        cJSON_AddNumberToObject(location, "lon", loc.lon);
+        cJSON_AddNumberToObject(location, "alt", loc.alt);
+        cJSON_AddNumberToObject(location, "speed", loc.speed);
+        cJSON_AddNumberToObject(location, "heading", loc.heading);
+        cJSON_AddNumberToObject(location, "hdop", loc.hdop);
+        cJSON_AddNumberToObject(location, "nsats", loc.nsats);
+        cJSON_AddNumberToObject(location, "fixstatus", loc.fixstatus);
+    }
+    cJSON_AddItemToObject(root, "location", location);
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    return json_str;
+}
+
+/**
+ * @brief   Assemble the GPS josn for web client
+ * 
+ * @param   const [char *]esn: The device esn number
+ * @return  [char *json_str]: JSON string
+ */
+static char *assemble_web_gps_message(const char *esn){
+    cJSON *root = cJSON_CreateObject();
+
+    char esn_str[48];
+    sprintf(esn_str, "sargas-%s", esn);
+    cJSON_AddStringToObject(root, "id", esn_str);
+
+    // Gnerate a UUID
+    char uuid_str[37];
+    uuid_t uuid;
+    uuid_generate(uuid);
+    uuid_unparse(uuid, uuid_str);
+    cJSON_AddStringToObject(root, "uuid", uuid_str);
+
+    // Get current time stamp
+    time_t now = time(NULL);
+    if(now == (time_t)-1){
+        log_error("Failed to get timestamp");
+        cJSON_AddNumberToObject(root, "timestamp", 0);
+    }
+    cJSON_AddNumberToObject(root, "timestamp", now);
+
+    cJSON_AddStringToObject(root, "event", "gps");
+    cJSON *payload = cJSON_CreateObject();
+    GPSData loc;
+    memset(&loc, 0, sizeof(loc));
+    if(gps_get_current_location(&loc)){
+        cJSON_AddNumberToObject(payload, "lat", loc.lat);
+        cJSON_AddNumberToObject(payload, "lon", loc.lon);
+        cJSON_AddNumberToObject(payload, "alt", loc.alt);
+        cJSON_AddNumberToObject(payload, "speed", loc.speed);
+        cJSON_AddNumberToObject(payload, "heading", loc.heading);
+        cJSON_AddNumberToObject(payload, "hdop", loc.hdop);
+        cJSON_AddNumberToObject(payload, "nsats", loc.nsats);
+        cJSON_AddNumberToObject(payload, "fixstatus", loc.fixstatus);
+    }
+    cJSON_AddItemToObject(root, "payload", payload);
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    return json_str;
 }
 
 /**
@@ -533,7 +641,7 @@ static void assemble_reverse_message(char *str, bool state){
 
 int start_sg_server(){
     // Initialise the file ring buffer
-    if (file_ringbuffer_init(&frb, 3, "buffer.dat") != 0) {
+    if (file_ringbuffer_init(&frb, 5000, "failed_req.dat") != 0) {
         printf("Failed to initialize buffer.\n");
         return -1;
     } 
@@ -558,6 +666,7 @@ int start_sg_server(){
         int ret3 = pthread_create(&bin_ack_thread, NULL, bin_ack_handler, task_queues->bin_ack_tasks);
         int ret4 = pthread_create(&bin_resend_thread, NULL, ack_manager, NULL);
         int ret5 = pthread_create(&web_client_thread, NULL, web_client_handler, task_queues->web_client_tasks);
+        int ret5 = pthread_create(&gps_thread, NULL, gps_handler, task_queues->web_client_tasks);
 
         set_gpio_change_callback(gpio_change_callback);
         if(!start_gpio_monitor()){
@@ -587,11 +696,16 @@ void stop_sg_server(){
     pthread_join(bin_clr_thread, NULL);
     pthread_join(bin_ack_thread, NULL);
     pthread_join(bin_resend_thread, NULL);
+    pthread_join(web_client_thread, NULL);
+    pthread_join(gps_thread, NULL);
 
     rb_destroy(task_queues->bin_query_tasks);
     rb_destroy(task_queues->bin_clear_tasks);
     rb_destroy(task_queues->bin_ack_tasks);
+    rb_destroy(task_queues->web_client_tasks);
     free(task_queues);
+
+    file_ringbuffer_destroy(&frb);
 
     SgTcpServer_free(g_srv);
     pthread_mutex_destroy(&bincount_mutex);

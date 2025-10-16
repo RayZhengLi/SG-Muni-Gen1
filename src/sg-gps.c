@@ -85,5 +85,16 @@ bool gps_get_current_location(GPSData *location){
         location->tof = gps_raw.tof;
         location->lat = (double)(gps_raw.lat) / 10000000.0;
         location->lat = round(location->lat * 10000000) / 10000000.0;
+        location->lon = (double)(gps_raw.lon) / 10000000.0;
+        location->lon = round(location->lon * 10000000) / 10000000.0;
+        location->alt = (float)(gps_raw.alt) / 100.0f;
+        location->alt = roundf(location->alt * 100) / 100.0f;
+        location->speed = (float)(gps_raw.spd_cmps) * 0.036f;
+        location->hdop = gps_raw.hdop;
+        location->heading = gps_raw.heading;
+        location->nsats = gps_raw.nsats;
+        location->fixstatus = gps_raw.fixstatus;
+        return true;
     }
+    return false;
 }
