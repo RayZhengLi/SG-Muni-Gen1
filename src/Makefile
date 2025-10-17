@@ -1,57 +1,53 @@
+# ====== 基本设置 ======
+APP      := sg-muni
+SRC_DIR  := .
+INC_DIR  := ./include
 
-# # build sg-tcp executable when user executes "make"
-# INCLUDES = -I./include
-# LIBS = -pthread -luuid
+# 收集所有 .c（如果你想精确控制，直接写死 SRC := xxx.c yyy.c）
+SRC := $(wildcard $(SRC_DIR)/*.c)
+OBJ := $(SRC:.c=.o)
 
-# TARGET = sg-tcp
+# ====== 交叉/本机编译选择（被包调用时会传 CC/CFLAGS/LDFLAGS/LIBS，以下仅作默认） ======
+USE_CROSS      ?= 1
+TARGET_TRIPLET ?= arm-openwrt-linux-uclibcgnueabi
+SDK            ?= $(HOME)/lmu5541_sdk
+SYSROOT        ?= $(SDK)/staging_dir/lmu5541_target-arm_cortex-a9+vfpv3_uClibc-0.9.33.2_eabi
 
-# # Add custom flags for this project
-# MY_CFLAGS = -std=c99
+ifeq ($(origin CC), default) # 只有在外部没传 CC 才生效
+  ifeq ($(USE_CROSS),1)
+    CC := $(TARGET_TRIPLET)-gcc
+  else
+    CC := gcc
+  endif
+endif
 
-# $(TARGET): $(TARGET).o sg-tcp-server.o sg-gpio.o sg-com
-# 	$(CC) $(LDFLAGS) $(MY_CFLAGS) $(LIBS) $(INCLUDES) -o $(TARGET) $(TARGET).o sg-tcp_server.o sg-gpio.o
-# $(TARGET).o: $(TARGET).c
-# 	$(CC) $(CFLAGS) $(MY_CFLAGS) $(LIBS) $(INCLUDES) -c $(TARGET).c
+# ====== 默认 CFLAGS/LDFLAGS/LIBS（外部传入则会叠加/覆盖） ======
+COMMON_CFLAGS  := -I$(INC_DIR) -Os -fPIC -ffunction-sections -fdata-sections \
+                  -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -DMG_TLS=MG_TLS_OPENSSL
+COMMON_LDFLAGS := -Wl,--gc-sections
+COMMON_LIBS    := -ldl -pthread -lz
 
-# sg-tcp_server.o: sg-tcp_server.c
-# 	$(CC) $(CFLAGS) $(MY_CFLAGS) $(LIBS) $(INCLUDES) -c sg-tcp_server.c
+ifeq ($(USE_CROSS),1)
+  COMMON_CFLAGS  += --sysroot=$(SYSROOT) -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=softfp
+  COMMON_LDFLAGS += --sysroot=$(SYSROOT) 
+endif
 
-# sg-gpio.o: sg-gpio.c
-# 	$(CC) $(CFLAGS) $(MY_CFLAGS) $(INCLUDES) -c sg-gpio.c
+# 注意：这里不直接加 -I$(STAGING_DIR)/usr/include/-L$(STAGING_DIR)/usr/lib，
+# 由上层包（package Makefile）传进来，或你手动传入
+CFLAGS  ?= $(COMMON_CFLAGS)
+LDFLAGS ?= $(COMMON_LDFLAGS)
+LIBS    ?= -Wl,-Bstatic -lssl -lcrypto -Wl,-Bdynamic $(COMMON_LIBS)
+# 如需：LIBS += -latomic -lrt
 
-# # remove object files and executable when user executes "make clean"
-# clean:
-# 	rm *.o $(TARGET)
+# ====== 规则 ======
+.PHONY: all clean
+all: $(APP)
 
-# OpenWrt cross-compiler variables
-CC      = $(TARGET_CC)
-CFLAGS  = -Wall -Wextra -std=c99 -g -D_SVID_SOURCE -D_XOPEN_SOURCE=700
-LDFLAGS = -luuid -lpthread -lm
+$(APP): $(OBJ)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS) $(LIBS)
 
-# Paths
-SRC_DIR = .
-INCLUDE_DIR = $(SRC_DIR)/include
-#BUILD_DIR = $(PKG_BUILD_DIR)
-BUILD_DIR ?= build
-
-
-# Find all source files
-SRCS = $(wildcard $(SRC_DIR)/*.c)
-OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRCS))
-
-# Target executable
-TARGET = sg-muni
-
-all: $(TARGET)
-
-$(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJS)
-
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
-	@mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) -I$(INCLUDE_DIR) -c $< -o $@
+%.o: %.c $(INC_DIR)/*
+	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET)
-	rm *.o $(TARGET)
-
+	rm -f $(APP) $(OBJ)

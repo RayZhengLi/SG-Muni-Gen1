@@ -33,8 +33,10 @@ static void *gpio_monitor_task(void *arg) {
     }
 
     while (!stop_thread) {
+        // printf("GPIO Monitor thread running\n");
         if (gpio_read_inputs(ALL_INPUT, &current_state)) {
             uint32_t changed = (last_input_state ^ current_state) & 0x7F; // 只检测7个输入位
+            // printf("GPIO monitor read %x\n", changed);
             if (changed) {
                 GPIOChangeInfo info;
                 info.current_state = current_state;
@@ -63,7 +65,7 @@ static void *gpio_monitor_task(void *arg) {
                 last_input_state = current_state;
             }
         }
-        usleep(5000); // 5ms
+        usleep(500000); // 5ms
     }
 
     printf("GPIO Monitor Thread Exiting.\n");

@@ -43,6 +43,9 @@ static MsgType parse_client_request(ClientRequest *client_req, const char *msg);
 static void gpio_change_callback(const GPIOChangeInfo *info);
 static void assemble_reverse_message(char *str, bool state);
 static char *assemble_binlift_message(int bin_count, const char *esn);
+static char *assemble_web_gpio_message(const char *esn, const GPIOChangeInfo *info);
+static char *assemble_web_gps_message(const char *esn);
+
 
 /**
  * @brief   Creat the task lists for 3 client request handlers
@@ -295,9 +298,10 @@ void *bin_ack_handler(void *arg){
     return NULL;
 }
 
-void gps_handler(void *arg){
+void *gps_handler(void *arg){
     RingBuffer *queue = (RingBuffer *)arg;
     log_debug("GPS handler task started");
+    printf("gps thread id: %lu\n", pthread_self());
     while(!thread_stop){
         WebRequest *web_task = calloc(1, sizeof(WebRequest));
         web_task->type = MSG_WEB_GPS;
@@ -316,13 +320,15 @@ void gps_handler(void *arg){
             }   
             free(web_gpio_json);
         }
-        sleep(1);
+        sleep(10);
     }
+    return NULL;
 }
 
 void *web_client_handler(void *arg){
     RingBuffer *queue = (RingBuffer *)arg;
     log_debug("Web client handler task started");
+    printf("Web client thread id: %lu\n", pthread_self());
 
     // Init the web client here
     sg_http_client_opts opts;
@@ -361,7 +367,7 @@ void *web_client_handler(void *arg){
                     break;
                 }
                 case -1:
-                    log_error("File buffer read error");
+                    log_error("File buffer empty or read error");
                     free(buf);
                     break;
                 case -5:
@@ -666,7 +672,7 @@ int start_sg_server(){
         int ret3 = pthread_create(&bin_ack_thread, NULL, bin_ack_handler, task_queues->bin_ack_tasks);
         int ret4 = pthread_create(&bin_resend_thread, NULL, ack_manager, NULL);
         int ret5 = pthread_create(&web_client_thread, NULL, web_client_handler, task_queues->web_client_tasks);
-        int ret5 = pthread_create(&gps_thread, NULL, gps_handler, task_queues->web_client_tasks);
+        int ret6 = pthread_create(&gps_thread, NULL, gps_handler, task_queues->web_client_tasks);
 
         set_gpio_change_callback(gpio_change_callback);
         if(!start_gpio_monitor()){
@@ -675,7 +681,7 @@ int start_sg_server(){
             return EXIT_FAILURE;
         }
 
-        if(!(ret1 || ret2 || ret3 || ret4)){
+        if(!(ret1 || ret2 || ret3 || ret4 || ret5 || ret6)){
             log_info("Server and client request handlers started!");
             return EXIT_SUCCESS;
         }
