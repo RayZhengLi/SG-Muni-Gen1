@@ -353,7 +353,7 @@ void *web_client_handler(void *arg){
             if (!buf) { log_error("malloc failed in file buffer read"); return NULL; }
             uint16_t type = 0;
             size_t need = sizeof(WebRequest);
-            int rc = file_ringbuffer_peek_bytes(&frb, buf, need, type);
+            int rc = file_ringbuffer_peek_bytes(&frb, buf, &need, &type);
             switch(rc){
                 case 0:{
                     if(type == WEB_REQUEST_MSG_TYPE && need == sizeof(WebRequest)){
@@ -422,13 +422,14 @@ void *web_client_handler(void *arg){
                 log_error("Failed to get response for request id=%d", req.id);
                 if(task->retry_msg){
                     log_error("The retry message failed again, do not delete it");
-                }
-                // Stored the send failed request to local file ring buffer
-                task->retry_msg = true;
-                if(file_ringbuffer_write_bytes_timed(&frb, task, sizeof(WebRequest), WEB_REQUEST_MSG_TYPE, 100) != 0){
-                    log_error("Failed to store the failed web request to the local file");
                 }else{
-                    log_info("Failed web request type %d has been stored to the local file",task->type);
+                    // Stored the send failed request to local file ring buffer
+                    task->retry_msg = true;
+                    if(file_ringbuffer_write_bytes_timed(&frb, task, sizeof(WebRequest), WEB_REQUEST_MSG_TYPE, 100) != 0){
+                        log_error("Failed to store the failed web request to the local file");
+                    }else{
+                        log_info("Failed web request type %d has been stored to the local file",task->type);
+                    }
                 }
             }
             free(task);
