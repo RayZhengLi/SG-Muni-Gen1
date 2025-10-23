@@ -67,9 +67,29 @@ define Package/sg-muni/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/sg-muni $(1)/usr/bin/
 
-	# 可选：安装一个简单的 init 脚本（如果需要随系统启动）
-	#$(INSTALL_DIR) $(1)/etc/init.d
-	#$(INSTALL_BIN) ./files/sg-muni.init $(1)/etc/init.d/sg-muni
+	# 安装一个简单的 init 脚本
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) ./files/sg-muni.init $(1)/etc/init.d/sg-muni
+endef
+
+define Package/sg-muni/postinst
+#!/bin/sh
+if [ -z "$${IPKG_INSTROOT}" ]; then
+  if [ -x /etc/init.d/sg-muni ]; then
+    /etc/init.d/sg-muni enable
+    /etc/init.d/sg-muni start
+  fi
+fi
+exit 0
+endef
+
+define Package/sg-muni/prerm
+#!/bin/sh
+if [ -z "$${IPKG_INSTROOT}" ]; then
+  [ -x /etc/init.d/sg-muni ] && /etc/init.d/sg-muni stop >/dev/null 2>&1 || true
+  [ -x /etc/init.d/sg-muni ] && /etc/init.d/sg-muni disable >/dev/null 2>&1 || true
+fi
+exit 0
 endef
 
 $(eval $(call BuildPackage,sg-muni))

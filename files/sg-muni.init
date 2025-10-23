@@ -1,0 +1,78 @@
+#!/bin/sh /etc/rc.common
+START=99
+STOP=10
+
+PROG="/usr/bin/sg-muni"
+CFG="/etc/sg-muni/sg-muni.conf"
+PIDFILE="/var/run/sg-muni.pid"
+
+# DNS 与 NTP 设置
+DNS_TMP="/etc/resolv.conf"          
+DNS_BAK="/var/run/sg-muni.resolv.bak"
+NAMESERVER="8.8.8.8"
+
+NTPD="/usr/sbin/ntpd"
+NTP_SERVERS="0.au.pool.ntp.org 1.au.pool.ntp.org 2.au.pool.ntp.org 3.au.pool.ntp.org"
+NTP_RETRY=3
+NTP_SLEEP=3
+
+write_dns() {
+    if [ -f "$DNS_TMP" ] && [ ! -f "$DNS_BAK" ]; then
+        cp -f "$DNS_TMP" "$DNS_BAK" 2>/dev/null || true
+    fi
+    echo "nameserver $NAMESERVER" > "$DNS_TMP"
+}
+
+restore_dns() {
+    if [ -f "$DNS_BAK" ]; then
+        mv -f "$DNS_BAK" "$DNS_TMP" 2>/dev/null || true
+    fi
+}
+
+ntp_sync_once() {
+    i=0
+    while [ $i -lt $NTP_RETRY ]; do
+        CMD="$NTPD -q"
+        for s in $NTP_SERVERS; do CMD="$CMD -p $s"; done
+        $CMD && return 0
+        i=$((i+1))
+        sleep $NTP_SLEEP
+    done
+    return 1
+}
+
+start() {
+
+    write_dns
+
+
+    if [ -x "$NTPD" ]; then
+        ntp_sync_once || echo "sg-muni.init: ntpd -q failed, continue anyway"
+    fi
+
+    if [ -x "$PROG" ]; then
+        if [ -f "$CFG" ]; then
+            "$PROG" -c "$CFG" >/dev/null 2>&1 &
+        else
+            "$PROG" >/dev/null 2>&1 &
+        fi
+        echo $! > "$PIDFILE"
+    else
+        echo "sg-muni.init: $PROG not found or not executable"
+        return 1
+    fi
+}
+
+stop() {
+
+    if [ -f "$PIDFILE" ]; then
+        kill "$(cat "$PIDFILE")" 2>/dev/null || true
+        rm -f "$PIDFILE"
+    else
+        killall sg-muni 2>/dev/null || true
+    fi
+
+    restore_dns
+}
+
+restart() { stop; start; }

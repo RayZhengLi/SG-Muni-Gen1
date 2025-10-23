@@ -276,8 +276,20 @@ void stop_gpio_monitor() {
     pthread_join(gpio_monitor_thread, NULL);
 }
 
+/*========= Externel functions for other thread to get counter ==========*/
+// —— 确保 g_counter_path 已初始化（线程可能未启动也能用） —— //
+static void ensure_counter_path_initialized(void) {
+    if (g_counter_path[0] == '\0') {
+        const char *env_path = getenv("SG_GPIO_COUNTER_FILE");
+        const char *counter_path = (env_path && *env_path) ? env_path : default_counter_path;
+        snprintf(g_counter_path, sizeof(g_counter_path), "%s", counter_path);
+    }
+}
+
+// —— 确保 g_counter_path 已初始化（线程可能未启动也能用） —— //
 bool get_gpio_info_snapshot(GPIOChangeInfo *out) {
     if (!out) return false;
+    ensure_counter_path_initialized();
     pthread_mutex_lock(&g_info_mtx);
     // 拷贝当前内部状态（计数、位图等）
     *out = g_info;   // 结构体按值拷贝
@@ -286,6 +298,8 @@ bool get_gpio_info_snapshot(GPIOChangeInfo *out) {
 }
 
 bool reset_gpio_counters(void) {
+    ensure_counter_path_initialized();
+    
     pthread_mutex_lock(&g_info_mtx);
 
     // 清零内存中的所有计数器
@@ -304,5 +318,33 @@ bool reset_gpio_counters(void) {
     }
 
     log_debug("GPIO Monitor: all counters reset to zero");
+    return true;
+}
+
+bool reset_gpio_counter(int index) {
+    ensure_counter_path_initialized();
+
+    if (index < 0 || index >= MAX_INPUTS) {
+        fprintf(stderr, "GPIO Monitor: reset counter index out of range: %d\n", index);
+        return false;
+    }
+
+    ensure_counter_path_initialized();
+
+    pthread_mutex_lock(&g_info_mtx);
+
+    g_info.inputs[index].counter = 0;
+
+    // 持久化到文件（原子写）
+    int rc = save_counters_to_file(g_counter_path, &g_info);
+
+    pthread_mutex_unlock(&g_info_mtx);
+
+    if (rc != 0) {
+        fprintf(stderr, "GPIO Monitor: reset counter[%d] save failed = %d\n", index, rc);
+        return false;
+    }
+
+    log_debug("GPIO Monitor: counter[%d] reset to zero", index);
     return true;
 }

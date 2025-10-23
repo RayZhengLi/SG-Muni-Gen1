@@ -103,6 +103,13 @@ bool get_gpio_info_snapshot(GPIOChangeInfo *out);
  */
 bool reset_gpio_counters(void);
 
+/**
+ * @brief 只清零指定通道的 counter 并立即保存到文件（线程安全）
+ * @param index 通道索引 [0, MAX_INPUTS)
+ * @return true 成功；false 失败（含 index 越界或保存失败）
+ */
+bool reset_gpio_counter(int index);
+
 
 #ifdef __cplusplus
 }

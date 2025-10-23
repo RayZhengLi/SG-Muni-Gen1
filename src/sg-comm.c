@@ -256,10 +256,14 @@ void *bin_clr_handler(void *arg){
         sprintf(str, "{BIN=%d;}", bincount);
         pthread_mutex_unlock(&bincount_mutex);
         SgTcpServer_broadcast(g_srv, (const uint8_t *)str, strlen(str));
+        bool res_clr_counter = reset_gpio_counter(BINLIFT_PORT_NUM);
         if (!res_read || !res_read || bincount){
             log_error("Error when clearing bincounts: read-%d, write-%d, bincount-%d",res_read, res_write, bincount);
         }else{
             log_debug("Bincount cleared successfully!");
+        }
+        if(res_clr_counter == false){
+            log_error("Error when clearing gpio counter for binlift port");
         }
         free(task);
     }
