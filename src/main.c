@@ -92,60 +92,77 @@ int main(){
         return EXIT_FAILURE;
     }
 
-    // Set the input bias to high when it is under lab test
-    char config_json[512]="";
-    uint32_t gpio_bias_mask = 0xFE;
-    uint32_t gpio_bias_state = 0x00;
-    if(read_json_from_file("config.json",config_json,sizeof(config_json))){
-        cJSON *root = cJSON_Parse(config_json);
-        if (!root) {
-            log_error("Filed to parse config JSON %s");
-            gpio_bias_mask = 0xFE;
-            gpio_bias_state = 0x00;
-        }else{
-            for(int i = 0; i < 7; i++){
-                cJSON *obj = cJSON_GetObjectItem(root, channel_name[i]);
-                if (cJSON_IsObject(obj)) {
-                    cJSON *bias   = cJSON_GetObjectItem(obj, "bias");
-                    cJSON *enable = cJSON_GetObjectItem(obj, "enable");
-                    if (cJSON_IsString(bias) && cJSON_IsString(enable)) {
-                        if(strcmp(bias->valuestring,"high") == 0){
-                            gpio_bias[i].bias = 1;
-                            gpio_bias_state |= (1 << i);
-                        }else{
-                            gpio_bias[i].bias = 0;
-                            gpio_bias_state &= ~(1 << i);
-                        }
-                        if(strcmp(enable->valuestring,"high") == 0){
-                            gpio_bias[i].enable = 1;
-                        }else{
-                            gpio_bias[i].enable = 0;
-                        }
-                    }
-                }
-            }
-            gpio_set_inputbias(gpio_bias_mask,gpio_bias_state);
-        }
-        cJSON_Delete(root);
+    // Get the GPIO current input bias
+    uint32_t current_bias = 0;
+    if(!gpio_read_bias(ALL_INPUT,&current_bias)){
+        log_error("Failed to read the GPIO input bias");
+        return EXIT_FAILURE;
     }else{
-        log_error("Failed to read config.json");
-        cJSON *root = cJSON_CreateObject();
-        for (int i = 0; i < 7; i++) {
-            // 创建设备对象
-            cJSON *device = cJSON_CreateObject();
-            cJSON_AddStringToObject(device, "bias", "low");
-            cJSON_AddStringToObject(device, "enable", "high");
-
-            // 将设备对象添加到根 JSON
-            cJSON_AddItemToObject(root, channel_name[i], device);
+        for(int i = 0; i < 7; i++){
+            if(current_bias & (1 << i)){
+                gpio_bias[i].bias = 1;
+                gpio_bias[i].enable = 0;
+            }else{
+                gpio_bias[i].bias = 0;
+                gpio_bias[i].enable = 1;
+            }
         }
-        char *json_str = cJSON_Print(root);
-        if (write_json_to_file("config.json", json_str) != 0) {
-            log_error("Can not write to JSON File");
-        }
-        free(json_str);
-        cJSON_Delete(root);
     }
+
+    // // Set the input bias to high when it is under lab test
+    // char config_json[512]="";
+    // uint32_t gpio_bias_mask = 0xFE;
+    // uint32_t gpio_bias_state = 0x00;
+    // if(read_json_from_file("config.json",config_json,sizeof(config_json))){
+    //     cJSON *root = cJSON_Parse(config_json);
+    //     if (!root) {
+    //         log_error("Filed to parse config JSON %s");
+    //         gpio_bias_mask = 0xFE;
+    //         gpio_bias_state = 0x00;
+    //     }else{
+    //         for(int i = 0; i < 7; i++){
+    //             cJSON *obj = cJSON_GetObjectItem(root, channel_name[i]);
+    //             if (cJSON_IsObject(obj)) {
+    //                 cJSON *bias   = cJSON_GetObjectItem(obj, "bias");
+    //                 cJSON *enable = cJSON_GetObjectItem(obj, "enable");
+    //                 if (cJSON_IsString(bias) && cJSON_IsString(enable)) {
+    //                     if(strcmp(bias->valuestring,"high") == 0){
+    //                         gpio_bias[i].bias = 1;
+    //                         gpio_bias_state |= (1 << i);
+    //                     }else{
+    //                         gpio_bias[i].bias = 0;
+    //                         gpio_bias_state &= ~(1 << i);
+    //                     }
+    //                     if(strcmp(enable->valuestring,"high") == 0){
+    //                         gpio_bias[i].enable = 1;
+    //                     }else{
+    //                         gpio_bias[i].enable = 0;
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //         gpio_set_inputbias(gpio_bias_mask,gpio_bias_state);
+    //     }
+    //     cJSON_Delete(root);
+    // }else{
+    //     log_error("Failed to read config.json");
+    //     cJSON *root = cJSON_CreateObject();
+    //     for (int i = 0; i < 7; i++) {
+    //         // 创建设备对象
+    //         cJSON *device = cJSON_CreateObject();
+    //         cJSON_AddStringToObject(device, "bias", "low");
+    //         cJSON_AddStringToObject(device, "enable", "high");
+    //
+    //         // 将设备对象添加到根 JSON
+    //         cJSON_AddItemToObject(root, channel_name[i], device);
+    //     }
+    //     char *json_str = cJSON_Print(root);
+    //     if (write_json_to_file("config.json", json_str) != 0) {
+    //         log_error("Can not write to JSON File");
+    //     }
+    //     free(json_str);
+    //     cJSON_Delete(root);
+    // }
 
     if(start_sg_server() == EXIT_FAILURE){
         log_error("Failed: start_sg_server()");

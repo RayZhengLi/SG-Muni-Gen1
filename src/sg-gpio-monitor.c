@@ -1,4 +1,6 @@
 // File: sg-gpio-monitor.c
+// NOTE: Define COUNTER_ENABLED in .h to enable persistent counters.
+
 #include "sg-gpio-monitor.h"
 #include "sg-gpio.h"
 #include "sg-log.h"
@@ -15,6 +17,8 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+
+// #define COUNTER_ENABLED
 
 static pthread_t gpio_monitor_thread;
 static bool stop_thread = false;
@@ -163,20 +167,23 @@ static void *gpio_monitor_task(void *arg) {
     (void) arg;
 
     // —— 设定计数文件路径 —— //
+#ifdef COUNTER_ENABLED
     const char *env_path = getenv("SG_GPIO_COUNTER_FILE");
     const char *counter_path = env_path && *env_path ? env_path : default_counter_path;
     snprintf(g_counter_path, sizeof(g_counter_path), "%s", counter_path);
-
+#endif
     // —— 初始化 g_info，并从文件恢复 —— //
     pthread_mutex_lock(&g_info_mtx);
     memset(&g_info, 0, sizeof(g_info));
     pthread_mutex_unlock(&g_info_mtx);
 
+#ifdef COUNTER_ENABLED
     int lrc = load_counters_from_file(g_counter_path, &g_info);
     if (lrc != 0) {
         // 没有文件或格式错误，从 0 开始
         log_error("GPIO Monitor: counter file not valid (%d), start from zero\n", lrc);
     }
+#endif
 
     uint32_t last_input_state = 0;
     uint32_t current_state = 0;
@@ -210,7 +217,7 @@ static void *gpio_monitor_task(void *arg) {
                     if (changed & (1u << i)) {
                         g_info.inputs[i].changed = true;
                         g_info.inputs[i].rising_edge = (current_state & (1u << i)) != 0;
-
+#ifdef COUNTER_ENABLED
                         // 仅当上升沿 == gpio_bias[i].enable 时计数
                         if (g_info.inputs[i].rising_edge == gpio_bias[i].enable) {
                             if (g_info.inputs[i].counter >= UINT_MAX) {
@@ -218,16 +225,17 @@ static void *gpio_monitor_task(void *arg) {
                             }
                             g_info.inputs[i].counter++;
                         }
+#endif
                         log_debug("Input %d state is changed", i);
                     }
                 }
-
+#ifdef COUNTER_ENABLED
                 // 计数已更新 —— 立即原子持久化
                 int src = save_counters_to_file(g_counter_path, &g_info);
                 if (src != 0) {
                     log_error(stderr, "GPIO Monitor: save counters failed = %d\n", src);
                 }
-
+#endif
                 // 回调（若有）
                 if (gpio_change_callback) {
                     // 回调内若访问 g_info，这里仍在锁内是安全的；
@@ -250,6 +258,7 @@ static void *gpio_monitor_task(void *arg) {
         usleep(5000);
     }
 
+#ifdef COUNTER_ENABLED
     // 退出前做一次保存
     pthread_mutex_lock(&g_info_mtx);
     int src = save_counters_to_file(g_counter_path, &g_info);
@@ -257,6 +266,7 @@ static void *gpio_monitor_task(void *arg) {
     if (src != 0) {
         log_error("GPIO Monitor: final save failed = %d\n", src);
     }
+#endif
 
     printf("GPIO Monitor Thread Exiting.\n");
     return NULL;

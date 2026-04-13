@@ -431,13 +431,15 @@ static void http_client_fn(struct mg_connection* c, int ev, void* ev_data) {
       struct mg_http_message* hm = (struct mg_http_message*) ev_data;
       int status = parse_http_status(hm);
       if (status >= 200 && status <= 299) {
-        rsp_deliver(cli, cx->req.id, 1, hm->message.buf, hm->message.len, cx->attempt + 1, status);
+        // rsp_deliver(cli, cx->req.id, 1, hm->message.buf, hm->message.len, cx->attempt + 1, status);  // The full message: headers + body
+        rsp_deliver(cli, cx->req.id, 1, hm->body.buf, hm->body.len, cx->attempt + 1, status);
       } else {
         if (should_retry_http(cli, cx, status)) {
           int delay = next_backoff_ms(cli, cx->attempt);
           schedule_retry(cli, &cx->req, cx->attempt + 1, now_ms() + (uint64_t)delay);
         } else {
-          rsp_deliver(cli, cx->req.id, 0, hm->message.buf, hm->message.len, cx->attempt + 1, status);
+          // rsp_deliver(cli, cx->req.id, 0, hm->message.buf, hm->message.len, cx->attempt + 1, status);
+          rsp_deliver(cli, cx->req.id, 0, hm->body.buf, hm->body.len, cx->attempt + 1, status);
         }
       }
       c->is_closing = 1;

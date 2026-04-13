@@ -10,6 +10,7 @@
 #define TIMEOUT_SEC          5
 #define MAX_RETRIES          3
 #define MAX_ESN_LEN          24
+#define IGNITION_PORT_NUM    0
 #define BINLIFT_PORT_NUM     1
 #define REVERSE_PORT_NUM     2
 #define BINCOUNT_FILE_NAME   "binrecord.bin"

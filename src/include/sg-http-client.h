@@ -55,7 +55,7 @@ typedef struct {
 typedef struct {
   int      id;          // 对应请求 ID
   int      ok;          // 1=成功；0=失败（最终）
-  char*    data;        // 原始 HTTP 报文（或错误信息）
+  char*    data;        // 原始 HTTP 报文（或错误信息), now it is only the body
   size_t   len;         // data 长度
   int      attempts;    // 实际尝试次数（1..N）
   int      http_status; // 有 HTTP 响应时的状态码，否则 0

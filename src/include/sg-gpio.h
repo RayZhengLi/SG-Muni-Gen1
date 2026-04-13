@@ -11,6 +11,7 @@
 // 定义GPIO输入/输出/ADC状态结构体
 typedef struct {
     uint32_t input_state;     // 当前输入状态
+    uint32_t input_bias;      // Current input bias
     uint32_t output_state;    // 当前输出状态
     int32_t adc_values[8];    // 当前ADC值
 } GPIOStatus;

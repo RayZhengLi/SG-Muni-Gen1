@@ -1,3 +1,9 @@
+/*
+* @name:  sg-comm.c
+* @brief: This is the main functions handlers.
+* @note:  Please #define SERVER_CONFIG_ENABLED to enable the server config reqest
+* @note:  Please #define GPIO_COUNTER_ENABLED to enable the counters for all GPIO inputs
+*/
 #include "sg-comm.h"
 #include "sg-tcp.h"
 #include "sg-gpio.h"
@@ -20,7 +26,7 @@
 #include <ctype.h>
 
 #define WEB_REQUEST_MSG_TYPE 1
-#define WEB_SERVER_URL "https://httpbin.org/post"
+#define WEB_SERVER_URL "http://dev-data.asgard4.com:7000/oberon/ha"
 
 static PendingAck      *pending_head  = NULL;
 static pthread_mutex_t  pending_mtx   = PTHREAD_MUTEX_INITIALIZER;
@@ -31,7 +37,7 @@ static pthread_t bin_clr_thread;
 static pthread_t bin_ack_thread;
 static pthread_t bin_resend_thread;
 static pthread_t web_client_thread;
-static pthread_t gps_thread;
+// static pthread_t gps_thread;
 
 static int       thread_stop          = 1;
 
@@ -43,7 +49,8 @@ static MsgType parse_client_request(ClientRequest *client_req, const char *msg);
 static void gpio_change_callback(const GPIOChangeInfo *info);
 static void assemble_reverse_message(char *str, bool state);
 static char *assemble_binlift_message(int bin_count, const char *esn);
-static char *assemble_web_gpio_message(const char *esn, const GPIOChangeInfo *info);
+static char *assemble_web_gpio_message(const char *esn, const GPIOChangeInfo *info, int port_num);
+static char *assemble_config_request_message(const char *esn);
 static char *assemble_web_gps_message(const char *esn);
 
 
@@ -256,15 +263,19 @@ void *bin_clr_handler(void *arg){
         sprintf(str, "{BIN=%d;}", bincount);
         pthread_mutex_unlock(&bincount_mutex);
         SgTcpServer_broadcast(g_srv, (const uint8_t *)str, strlen(str));
+#ifdef GPIO_COUNTER_ENABLED
         bool res_clr_counter = reset_gpio_counter(BINLIFT_PORT_NUM);
+#endif
         if (!res_read || !res_read || bincount){
             log_error("Error when clearing bincounts: read-%d, write-%d, bincount-%d",res_read, res_write, bincount);
         }else{
             log_debug("Bincount cleared successfully!");
         }
+#ifdef GPIO_COUNTER_ENABLED
         if(res_clr_counter == false){
             log_error("Error when clearing gpio counter for binlift port");
         }
+#endif
         free(task);
     }
     log_debug("Bin clear handler exiting");
@@ -302,32 +313,32 @@ void *bin_ack_handler(void *arg){
     return NULL;
 }
 
-void *gps_handler(void *arg){
-    RingBuffer *queue = (RingBuffer *)arg;
-    log_debug("GPS handler task started");
-    printf("gps thread id: %lu\n", pthread_self());
-    while(!thread_stop){
-        WebRequest *web_task = calloc(1, sizeof(WebRequest));
-        web_task->type = MSG_WEB_GPS;
-        strncpy(web_task->url, WEB_SERVER_URL, sizeof(web_task->url)-1);
-        GPSData loc;
-        memset(&loc, 0, sizeof(loc));
-        char *web_gpio_json = assemble_web_gps_message(esn_data);
-        if(web_gpio_json){
-            strncpy(web_task->body, web_gpio_json, strlen(web_gpio_json));
-            web_task->retry_msg = false;
-            if(!rb_timed_push(queue, web_task, 100)){
-                log_error("Failed to push web gps task to the queue, dropping");
-                free(web_task);
-            }else{
-                log_debug("Web gps task has been pushed to the queue");
-            }   
-            free(web_gpio_json);
-        }
-        sleep(10);
-    }
-    return NULL;
-}
+// void *gps_handler(void *arg){
+//     RingBuffer *queue = (RingBuffer *)arg;
+//     log_debug("GPS handler task started");
+//     printf("gps thread id: %lu\n", pthread_self());
+//     while(!thread_stop){
+//         WebRequest *web_task = calloc(1, sizeof(WebRequest));
+//         web_task->type = MSG_WEB_GPS;
+//         strncpy(web_task->url, WEB_SERVER_URL, sizeof(web_task->url)-1);
+//         GPSData loc;
+//         memset(&loc, 0, sizeof(loc));
+//         char *web_gpio_json = assemble_web_gps_message(esn_data);
+//         if(web_gpio_json){
+//             strncpy(web_task->body, web_gpio_json, strlen(web_gpio_json));
+//             web_task->retry_msg = false;
+//             if(!rb_timed_push(queue, web_task, 100)){
+//                 log_error("Failed to push web gps task to the queue, dropping");
+//                 free(web_task);
+//             }else{
+//                 log_debug("Web gps task has been pushed to the queue");
+//             }   
+//             free(web_gpio_json);
+//         }
+//         sleep(10);
+//     }
+//     return NULL;
+// }
 
 void *web_client_handler(void *arg){
     RingBuffer *queue = (RingBuffer *)arg;
@@ -352,7 +363,7 @@ void *web_client_handler(void *arg){
         static int req_id = 1;
         if(!rb_timed_pop(queue, (void**)&task, 500)){
             // Check if there are failed requests in the local file ring buffer
-            log_info("No web client task in the queue, checking old failed requests in the file buffer");
+            // log_info("No web client task in the queue, checking old failed requests in the file buffer");
             uint8_t *buf = (uint8_t*)malloc(sizeof(WebRequest));
             if (!buf) { log_error("malloc failed in file buffer read"); return NULL; }
             uint16_t type = 0;
@@ -371,7 +382,7 @@ void *web_client_handler(void *arg){
                     break;
                 }
                 case -1:
-                    log_error("File buffer empty or read error");
+                    // log_error("File buffer empty or read error");
                     free(buf);
                     break;
                 case -5:
@@ -406,6 +417,15 @@ void *web_client_handler(void *arg){
                     req.body_len = strlen(task->body);
                     req.max_retries = 3;
                     break;
+#ifdef SERVER_CONFIG_ENABLED
+                case MSG_WEB_CONFIG:
+                    req.method = SG_HTTP_GET;
+                    req.url    = task->url;
+                    req.body   = NULL;
+                    req.body_len = 0;
+                    req.max_retries = 3;
+                    break;
+#endif
             }
             sg_http_response rsp = {0};
             int ok = sg_http_client_send_and_wait(web_cli, &req, 1000, 5000, &rsp);
@@ -452,21 +472,48 @@ void *web_client_handler(void *arg){
  */
 static void gpio_change_callback(const GPIOChangeInfo *info){
     // Assemble the web client message
-    char *web_gpio_json = assemble_web_gpio_message(esn_data, info);
-    if(web_gpio_json){
-        WebRequest *web_task = calloc(1, sizeof(WebRequest));
-        web_task->type = MSG_WEB_GPIO;
-        strncpy(web_task->url, WEB_SERVER_URL, sizeof(web_task->url)-1);
-        strncpy(web_task->body, web_gpio_json, strlen(web_gpio_json));
-        web_task->retry_msg = false;
-        if(!rb_timed_push(task_queues->web_client_tasks, web_task, 100)){
-            log_error("Failed to push web gpio task to the queue, dropping");
-            free(web_task);
-        }else{
-            log_debug("Web gpio task has been pushed to the queue");
-        }   
-        free(web_gpio_json);
+    for (int i = 0; i < MAX_INPUTS; ++i){
+        if(info->inputs[i].changed){
+            char *web_gpio_json = assemble_web_gpio_message(esn_data, info, i);
+            if(web_gpio_json){
+                WebRequest *web_task = calloc(1, sizeof(WebRequest));
+                web_task->type = MSG_WEB_GPIO;
+                strncpy(web_task->url, WEB_SERVER_URL, sizeof(web_task->url)-1);
+                strncpy(web_task->body, web_gpio_json, strlen(web_gpio_json));
+                web_task->retry_msg = false;
+                if(!rb_timed_push(task_queues->web_client_tasks, web_task, 100)){
+                    log_error("Failed to push web gpio task to the queue, dropping");
+                    free(web_task);
+                }else{
+                    log_debug("Web gpio task has been pushed to the queue");
+                }   
+                free(web_gpio_json);
+            }
+        }
     }
+    
+#ifdef SERVER_CONFIG_ENABLED
+    // Check if the ignition is triggered, if so, send config request
+    if((info->inputs[IGNITION_PORT_NUM].changed == true) && (info->inputs[IGNITION_PORT_NUM].rising_edge == gpio_bias[IGNITION_PORT_NUM].enable)){
+        // Generate config request web message
+        char *web_config_req_json = NULL;
+        web_config_req_json = assemble_config_request_message(esn_data);
+        if(web_config_req_json){
+            WebRequest *web_task = calloc(1, sizeof(WebRequest));
+            web_task->type = MSG_WEB_GPIO;
+            strncpy(web_task->url, WEB_SERVER_URL, sizeof(web_task->url)-1);
+            strncpy(web_task->body, web_config_req_json, strlen(web_config_req_json));
+            web_task->retry_msg = false;
+            if(!rb_timed_push(task_queues->web_client_tasks, web_task, 100)){
+                log_error("Failed to push web config request task to the queue, dropping");
+                free(web_task);
+            }else{
+                log_debug("Web config request task has been pushed to the queue");
+            }   
+            free(web_config_req_json);
+        }
+    }
+#endif
 
     if((info->inputs[BINLIFT_PORT_NUM].changed == true) && (info->inputs[BINLIFT_PORT_NUM].rising_edge == gpio_bias[BINLIFT_PORT_NUM].enable)){
         char *bin_message = NULL;
@@ -506,11 +553,11 @@ static void gpio_change_callback(const GPIOChangeInfo *info){
  * @param   const [char *]esn: The device esn number
  * @return  [char *json_str]: JSON string
  */
-static char *assemble_web_gpio_message(const char *esn, const GPIOChangeInfo *info){
+static char *assemble_web_gpio_message(const char *esn, const GPIOChangeInfo *info, int port_num){
     cJSON *root = cJSON_CreateObject();
 
     char esn_str[48];
-    sprintf(esn_str, "sargas-%s", esn);
+    sprintf(esn_str, "%s", esn);
     cJSON_AddStringToObject(root, "id", esn_str);
 
     // Gnerate a UUID
@@ -518,35 +565,45 @@ static char *assemble_web_gpio_message(const char *esn, const GPIOChangeInfo *in
     uuid_t uuid;
     uuid_generate(uuid);
     uuid_unparse(uuid, uuid_str);
-    cJSON_AddStringToObject(root, "uuid", uuid_str);
+    cJSON_AddStringToObject(root, "uid", uuid_str);
 
     // Get current time stamp
     time_t now = time(NULL);
     if(now == (time_t)-1){
         log_error("Failed to get timestamp");
-        cJSON_AddNumberToObject(root, "timestamp", 0);
+        cJSON_AddNumberToObject(root, "tim", 0);
     }
-    cJSON_AddNumberToObject(root, "timestamp", now);
+    cJSON_AddNumberToObject(root, "tim", now);
 
-    cJSON_AddStringToObject(root, "event", "input");
+    cJSON_AddStringToObject(root, "evt", "din");
 
-    cJSON *payload = cJSON_CreateObject();
-    for (int i = 0; i < MAX_INPUTS; ++i) {
-        if(info->inputs[i].changed){
-            cJSON *p_obj = cJSON_CreateObject();
-            if(info->inputs[i].rising_edge == gpio_bias[i].enable){
-                cJSON_AddNumberToObject(p_obj, "value",1);
-            }else{
-                cJSON_AddNumberToObject(p_obj, "value",0);
-            }
-            cJSON_AddNumberToObject(p_obj, "value", info->inputs[i].rising_edge ? 1 : 0);
-            cJSON_AddNumberToObject(p_obj, "count", info->inputs[i].counter);
-            char port_str[8];
-            sprintf(port_str, "port%d", i);
-            cJSON_AddItemToObject(payload, port_str, p_obj);
-        }
+    // cJSON *payload = cJSON_CreateObject();
+    // Only add 1 port per message
+    cJSON *p_obj = cJSON_CreateObject();
+    cJSON_AddNumberToObject(p_obj, "pt", port_num);
+    if(info->inputs[port_num].rising_edge == gpio_bias[port_num].enable){
+        cJSON_AddNumberToObject(p_obj, "val",1);
+    }else{
+        cJSON_AddNumberToObject(p_obj, "val",0);
     }
-    cJSON_AddItemToObject(root, "payload", payload);
+    // cJSON_AddNumberToObject(p_obj, "val", info->inputs[port_num].rising_edge ? 1 : 0);
+    
+    // for (int i = 0; i < MAX_INPUTS; ++i) {
+    //     if(info->inputs[i].changed){
+    //         cJSON *p_obj = cJSON_CreateObject();
+    //         if(info->inputs[i].rising_edge == gpio_bias[i].enable){
+    //             cJSON_AddNumberToObject(p_obj, "val",1);
+    //         }else{
+    //             cJSON_AddNumberToObject(p_obj, "val",0);
+    //         }
+    //         cJSON_AddNumberToObject(p_obj, "val", info->inputs[i].rising_edge ? 1 : 0);
+    //         cJSON_AddNumberToObject(p_obj, "cnt", info->inputs[i].counter);
+    //         char port_str[8];
+    //         sprintf(port_str, "port%d", i);
+    //         cJSON_AddItemToObject(payload, port_str, p_obj);
+    //     }
+    // }
+    cJSON_AddItemToObject(root, "pld", p_obj);
     cJSON *location = cJSON_CreateObject();
     GPSData loc;
     memset(&loc, 0, sizeof(loc));
@@ -554,13 +611,47 @@ static char *assemble_web_gpio_message(const char *esn, const GPIOChangeInfo *in
         cJSON_AddNumberToObject(location, "lat", loc.lat);
         cJSON_AddNumberToObject(location, "lon", loc.lon);
         cJSON_AddNumberToObject(location, "alt", loc.alt);
-        cJSON_AddNumberToObject(location, "speed", loc.speed);
-        cJSON_AddNumberToObject(location, "heading", loc.heading);
+        cJSON_AddNumberToObject(location, "spd", loc.speed);
+        cJSON_AddNumberToObject(location, "hdg", loc.heading);
         cJSON_AddNumberToObject(location, "hdop", loc.hdop);
-        cJSON_AddNumberToObject(location, "nsats", loc.nsats);
-        cJSON_AddNumberToObject(location, "fixstatus", loc.fixstatus);
+        cJSON_AddNumberToObject(location, "nsat", loc.nsats);
     }
-    cJSON_AddItemToObject(root, "location", location);
+    cJSON_AddItemToObject(root, "loc", location);
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    return json_str;
+}
+
+/**
+ * @brief   Assemble the config request json for web client
+ * 
+ * @param   const [char *]esn: The device esn number
+ * @return  [char *json_str]: JSON string
+ */
+static char *assemble_config_request_message(const char *esn){
+    cJSON *root = cJSON_CreateObject();
+    char esn_str[48];
+    sprintf(esn_str, "%s", esn);
+    cJSON_AddStringToObject(root, "id", esn_str);
+
+    // Gnerate a UUID
+    char uuid_str[37];
+    uuid_t uuid;
+    uuid_generate(uuid);
+    uuid_unparse(uuid, uuid_str);
+    cJSON_AddStringToObject(root, "uid", uuid_str);
+
+    // Get current time stamp
+    time_t now = time(NULL);
+    if(now == (time_t)-1){
+        log_error("Failed to get timestamp");
+        cJSON_AddNumberToObject(root, "time", 0);
+    }
+    cJSON_AddNumberToObject(root, "time", now);
+
+    cJSON_AddStringToObject(root, "evt", "cfg_req");
+
     char *json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
 
@@ -677,7 +768,7 @@ int start_sg_server(){
         int ret3 = pthread_create(&bin_ack_thread, NULL, bin_ack_handler, task_queues->bin_ack_tasks);
         int ret4 = pthread_create(&bin_resend_thread, NULL, ack_manager, NULL);
         int ret5 = pthread_create(&web_client_thread, NULL, web_client_handler, task_queues->web_client_tasks);
-        int ret6 = pthread_create(&gps_thread, NULL, gps_handler, task_queues->web_client_tasks);
+        // int ret6 = pthread_create(&gps_thread, NULL, gps_handler, task_queues->web_client_tasks);
 
         set_gpio_change_callback(gpio_change_callback);
         if(!start_gpio_monitor()){
@@ -686,7 +777,7 @@ int start_sg_server(){
             return EXIT_FAILURE;
         }
 
-        if(!(ret1 || ret2 || ret3 || ret4 || ret5 || ret6)){
+        if(!(ret1 || ret2 || ret3 || ret4 || ret5)){
             log_info("Server and client request handlers started!");
             return EXIT_SUCCESS;
         }
@@ -708,7 +799,7 @@ void stop_sg_server(){
     pthread_join(bin_ack_thread, NULL);
     pthread_join(bin_resend_thread, NULL);
     pthread_join(web_client_thread, NULL);
-    pthread_join(gps_thread, NULL);
+    // pthread_join(gps_thread, NULL);
 
     rb_destroy(task_queues->bin_query_tasks);
     rb_destroy(task_queues->bin_clear_tasks);

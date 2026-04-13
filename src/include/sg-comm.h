@@ -22,6 +22,7 @@ typedef enum {
     MSG_BIN_ACK,
     MSG_WEB_GPIO,
     MSG_WEB_GPS,
+    MSG_WEB_CONFIG,
 } MsgType;
 
 typedef struct{

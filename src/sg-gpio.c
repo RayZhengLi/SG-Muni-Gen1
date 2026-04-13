@@ -60,8 +60,16 @@ bool gpio_read_inputs(uint32_t mask, uint32_t *state) {
     }
 
     *state = shm_info->curr_input_state & mask;
-    gpio_status.input_state &= *state;
+    gpio_status.input_state = *state;
     return true;
+}
+
+bool gpio_read_bias(uint32_t mask, uint32_t *state){
+    if (!shm_info || !state) {
+        return false;
+    }
+    *state = shm_info->curr_input_bias &mask;
+    gpio_status.input_bias = *state;
 }
 
 // 设置单个或多个GPIO输出状态
